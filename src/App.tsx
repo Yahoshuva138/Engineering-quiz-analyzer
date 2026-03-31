@@ -174,8 +174,6 @@ interface Question {
   visualizationHint: string;
   infographicUrl?: string;
   imagePrompt?: string;
-  videoUrl?: string;
-  videoPrompt?: string;
   extraResources?: string[];
   visualizationData?: {
     type: 'graph' | 'steps' | 'logic';
@@ -268,7 +266,7 @@ const StepsVisualizer = ({ steps }: { steps: string[] }) => {
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'home' | 'dashboard' | 'analysis' | 'ai-studio'>('home');
+  const [view, setView] = useState<'home' | 'dashboard' | 'analysis'>('home');
   const [file, setFile] = useState<File | null>(null);
   const [manualText, setManualText] = useState<string>('');
   const [manualTitle, setManualTitle] = useState<string>('');
@@ -290,22 +288,6 @@ export default function App() {
   const [customRegenImage, setCustomRegenImage] = useState<File | null>(null);
   const [isCustomRegenerating, setIsCustomRegenerating] = useState(false);
   const customRegenImageInputRef = useRef<HTMLInputElement>(null);
-
-  // AI Studio State
-  const [chatMessages, setChatMessages] = useState<{ role: 'user' | 'model', text: string }[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const [isChatting, setIsChatting] = useState(false);
-  const [studioImagePrompt, setStudioImagePrompt] = useState('');
-  const [studioImageSize, setStudioImageSize] = useState<'1K' | '2K' | '4K'>('1K');
-  const [studioImageAspectRatio, setStudioImageAspectRatio] = useState<'1:1' | '3:4' | '4:3' | '9:16' | '16:9'>('1:1');
-  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
-  const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
-  const [studioVideoPrompt, setStudioVideoPrompt] = useState('');
-  const [studioVideoAspectRatio, setStudioVideoAspectRatio] = useState<'16:9' | '9:16'>('16:9');
-  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
-  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
-  const [studioTab, setStudioTab] = useState<'chat' | 'image' | 'video'>('chat');
-  const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -360,134 +342,6 @@ export default function App() {
   };
 
   const [generatingInfographics, setGeneratingInfographics] = useState<Record<string, boolean>>({});
-  const [generatingVideos, setGeneratingVideos] = useState<Record<string, boolean>>({});
-
-  // --- AI Studio Functions ---
-
-  const sendChatMessage = async () => {
-    if (!chatInput.trim()) return;
-
-    const userMessage = { role: 'user' as const, text: chatInput };
-    setChatMessages(prev => [...prev, userMessage]);
-    setChatInput('');
-    setIsChatting(true);
-
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const chat = ai.chats.create({
-        model: "gemini-3.1-pro-preview",
-        config: {
-          systemInstruction: "You are an expert engineering assistant. Provide detailed, accurate, and helpful information on all engineering subjects. Use standard LaTeX for formulas. You have access to Google Search for real-time information.",
-          tools: [{ googleSearch: {} }],
-          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
-        }
-      });
-
-      // Maintain history for the chat
-      const history = chatMessages.map(msg => ({
-        role: msg.role,
-        parts: [{ text: msg.text }]
-      }));
-
-      const response = await chat.sendMessage({
-        message: chatInput
-      });
-
-      const modelMessage = { role: 'model' as const, text: response.text || 'No response.' };
-      setChatMessages(prev => [...prev, modelMessage]);
-    } catch (err) {
-      console.error('Chat error:', err);
-      setError('Failed to send message.');
-    } finally {
-      setIsChatting(false);
-    }
-  };
-
-  const generateStudioImage = async () => {
-    if (!studioImagePrompt.trim()) return;
-
-    setIsGeneratingImage(true);
-    setGeneratedImageUrl(null);
-    setError(null);
-
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-pro-image-preview',
-        contents: {
-          parts: [{ text: studioImagePrompt }],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: studioImageAspectRatio,
-            imageSize: studioImageSize
-          }
-        }
-      });
-
-      for (const part of response.candidates[0].content.parts) {
-        if (part.inlineData) {
-          setGeneratedImageUrl(`data:image/png;base64,${part.inlineData.data}`);
-          break;
-        }
-      }
-    } catch (err) {
-      console.error('Image generation error:', err);
-      setError('Failed to generate image.');
-    } finally {
-      setIsGeneratingImage(false);
-    }
-  };
-
-  const generateStudioVideo = async () => {
-    if (!studioVideoPrompt.trim()) return;
-
-    setIsGeneratingVideo(true);
-    setGeneratedVideoUrl(null);
-    setError(null);
-
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      let operation = await ai.models.generateVideos({
-        model: 'veo-3.1-fast-generate-preview',
-        prompt: studioVideoPrompt,
-        config: {
-          numberOfVideos: 1,
-          resolution: '720p',
-          aspectRatio: studioVideoAspectRatio
-        }
-      });
-
-      // Poll for completion
-      while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        operation = await ai.operations.getVideosOperation({ operation: operation });
-      }
-
-      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      if (downloadLink) {
-        const response = await fetch(downloadLink, {
-          method: 'GET',
-          headers: {
-            'x-goog-api-key': process.env.GEMINI_API_KEY || '',
-          },
-        });
-        const blob = await response.blob();
-        setGeneratedVideoUrl(URL.createObjectURL(blob));
-      }
-    } catch (err) {
-      console.error('Video generation error:', err);
-      setError('Failed to generate video.');
-    } finally {
-      setIsGeneratingVideo(false);
-    }
-  };
-
-  useEffect(() => {
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [chatMessages]);
 
   const loadAnalysis = async (item: QuizAnalysis) => {
     if (!user || !item.id) return;
@@ -637,8 +491,7 @@ export default function App() {
            - Include the EXACT formulas, specific parameters (values, units), and a clear, technically sound analogy.
            - Explicitly describe the visual elements: "A diagram showing [component A] connected to [component B] with labels for [parameter X] and the formula [formula Y]".
            - Style: Professional engineering infographic, clean, high-contrast, white background, technical diagram.
-        8. Video Generation Prompt for a 5-10s explanatory animation.
-        9. 2-3 Extra Resources (URLs to YouTube or educational sites).
+        8. 2-3 Extra Resources (URLs to YouTube or educational sites).
         
         Return JSON:
         {
@@ -655,7 +508,6 @@ export default function App() {
               "explanation": "Plain English explanation (No $ or #)",
               "visualizationHint": "Short visualization summary",
               "imagePrompt": "Detailed prompt for infographic generation",
-              "videoPrompt": "Detailed prompt for a short explanatory video animation",
               "extraResources": ["url1", "url2"],
               "visualizationData": {
                 "type": "steps" | "logic",
@@ -818,63 +670,6 @@ export default function App() {
       console.error(`Failed to generate infographic for question ${q.id}:`, err);
     } finally {
       setGeneratingInfographics(prev => ({ ...prev, [q.docId!]: false }));
-    }
-  };
-
-  const generateSingleVideo = async (q: Question, analysisId: string) => {
-    if (!q.docId || generatingVideos[q.docId]) return;
-    
-    // Check for API key selection for Veo
-    const hasKey = await (window as any).aistudio?.hasSelectedApiKey?.();
-    if (!hasKey) {
-      await (window as any).aistudio?.openSelectKey?.();
-    }
-
-    setGeneratingVideos(prev => ({ ...prev, [q.docId!]: true }));
-    try {
-      const ai = new GoogleGenAI({ apiKey: (process.env as any).API_KEY || process.env.GEMINI_API_KEY || '' });
-      
-      let operation = await ai.models.generateVideos({
-        model: 'veo-3.1-fast-generate-preview',
-        prompt: q.videoPrompt || `A simple 2D explanatory animation for: ${q.question}. Subject: ${q.subject}. Clear, educational, high contrast.`,
-        config: {
-          numberOfVideos: 1,
-          resolution: '720p',
-          aspectRatio: '16:9'
-        }
-      });
-
-      while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        operation = await ai.operations.getVideosOperation({ operation: operation });
-      }
-
-      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      if (downloadLink) {
-        const response = await fetch(downloadLink, {
-          method: 'GET',
-          headers: {
-            'x-goog-api-key': (process.env as any).API_KEY || process.env.GEMINI_API_KEY || '',
-          },
-        });
-        const blob = await response.blob();
-        const videoUrl = URL.createObjectURL(blob);
-
-        setAnalysis(prev => {
-          if (!prev || !prev.questions) return prev;
-          const newQuestions = prev.questions.map(item => 
-            item.docId === q.docId ? { ...item, videoUrl } : item
-          );
-          return { ...prev, questions: newQuestions };
-        });
-      }
-    } catch (err) {
-      console.error(`Failed to generate video for question ${q.id}:`, err);
-      if (err instanceof Error && err.message.includes('Requested entity was not found')) {
-        await (window as any).aistudio?.openSelectKey?.();
-      }
-    } finally {
-      setGeneratingVideos(prev => ({ ...prev, [q.docId!]: false }));
     }
   };
 
@@ -1344,15 +1139,6 @@ export default function App() {
                   )}
                 >
                   <LayoutDashboard size={18} /> Dashboard
-                </button>
-                <button 
-                  onClick={() => setView('ai-studio')}
-                  className={cn(
-                    "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
-                    view === 'ai-studio' ? "bg-purple-50 text-purple-600" : "text-gray-600 hover:bg-gray-50"
-                  )}
-                >
-                  <Sparkles size={18} /> AI Studio
                 </button>
                 <div className="h-8 w-px bg-gray-200 mx-2" />
                 <div className="flex items-center gap-3">
@@ -2225,59 +2011,6 @@ export default function App() {
                           {q.visualizationData?.type === 'steps' && q.visualizationData.data && (
                             <StepsVisualizer steps={q.visualizationData.data} />
                           )}
-
-                          {/* Video Section */}
-                          <div className="mt-8 pt-8 border-t border-white/10">
-                            <h4 className="flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-gray-500 mb-4">
-                              <Video size={14} className="text-red-400" /> Explanatory Video
-                            </h4>
-                            {q.videoUrl ? (
-                              <div className="space-y-4">
-                                <video 
-                                  src={q.videoUrl} 
-                                  controls 
-                                  className="w-full rounded-xl border border-white/10 shadow-2xl"
-                                />
-                                <div className="flex flex-wrap gap-2">
-                                  <a 
-                                    href={q.videoUrl} 
-                                    download={`Explainer_Q${q.id}.mp4`}
-                                    className="flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-[10px] font-bold uppercase tracking-widest text-white transition-all"
-                                  >
-                                    <Download size={14} /> Download Video
-                                  </a>
-                                  <button 
-                                    onClick={() => {
-                                      navigator.clipboard.writeText(q.videoPrompt || '');
-                                      toast.success('Video prompt copied to clipboard!');
-                                    }}
-                                    className="flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-[10px] font-bold uppercase tracking-widest text-white transition-all"
-                                  >
-                                    <Copy size={14} /> Copy Prompt for Other AI
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="h-48 bg-white/5 rounded-xl border border-dashed border-white/20 flex flex-col items-center justify-center gap-3 text-gray-500">
-                                {generatingVideos[q.docId!] ? (
-                                  <>
-                                    <Loader2 className="animate-spin" size={24} />
-                                    <p className="text-xs font-medium">Generating Explanatory Video...</p>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Video size={24} className="opacity-20" />
-                                    <button 
-                                      onClick={() => generateSingleVideo(q, analysis.id!)}
-                                      className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 rounded-lg text-[10px] font-bold uppercase tracking-widest text-red-400 transition-all border border-red-500/30"
-                                    >
-                                      Generate Explanatory Video
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            )}
-                          </div>
 
                           {/* Extra Resources */}
                           {q.extraResources && q.extraResources.length > 0 && (
