@@ -1,0 +1,70 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user information and preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique Firebase Auth UID." },
+        "email": { "type": "string", "format": "email", "description": "The user's email address." },
+        "displayName": { "type": "string", "description": "The user's display name." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the profile was created." }
+      },
+      "required": ["uid", "email"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Stores a single question from a quiz analysis.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "subject": { "type": "string" },
+        "question": { "type": "string" },
+        "correctAnswer": { "type": "string" },
+        "explanation": { "type": "string" },
+        "visualizationHint": { "type": "string" },
+        "infographicUrl": { "type": "string" },
+        "imagePrompt": { "type": "string" },
+        "visualizationData": { "type": "object", "description": "Data for interactive visualizations." },
+        "isCorrect": { "type": "boolean" }
+      },
+      "required": ["id", "question", "correctAnswer", "explanation"]
+    },
+    "QuizAnalysis": {
+      "title": "Quiz Analysis",
+      "description": "Stores the results of a quiz analysis.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user who uploaded the quiz." },
+        "fileName": { "type": "string", "description": "The name of the uploaded PDF file." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the analysis was performed." },
+        "overallSummary": { "type": "string", "description": "AI-generated summary of the quiz." },
+        "topSubject": { "type": "string", "description": "The most frequent subject in the quiz." },
+        "totalQuestionsFound": { "type": "integer" },
+        "stats": {
+          "type": "object",
+          "properties": {
+            "total": { "type": "integer" },
+            "correct": { "type": "integer" },
+            "wrong": { "type": "integer" }
+          }
+        }
+      },
+      "required": ["userId", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents."
+    },
+    "/users/{userId}/analyses/{analysisId}": {
+      "schema": "QuizAnalysis",
+      "description": "Individual quiz analysis results for a user."
+    },
+    "/users/{userId}/analyses/{analysisId}/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Individual questions for a quiz analysis."
+    }
+  }
+}

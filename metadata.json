@@ -1,0 +1,5 @@
+{
+  "name": "Engineering Quiz Analyzer",
+  "description": "An AI-powered tool that analyzes engineering quiz PDFs, provides detailed explanations, and helps students visualize complex problems across all engineering subjects.",
+  "requestFramePermissions": []
+}
