@@ -10,6 +10,7 @@ import {
   Upload, 
   CheckCircle2, 
   XCircle, 
+  X,
   BookOpen, 
   BrainCircuit, 
   ChevronRight, 
@@ -25,6 +26,9 @@ import {
   LineChart as LineChartIcon,
   Activity,
   Trash2,
+  Edit2,
+  Filter,
+  ArrowUpDown,
   Download,
   Zap,
   Target,
@@ -53,6 +57,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { 
@@ -174,6 +180,7 @@ interface Question {
   visualizationHint: string;
   infographicUrl?: string;
   imagePrompt?: string;
+  videoPrompt?: string;
   extraResources?: string[];
   visualizationData?: {
     type: 'graph' | 'steps' | 'logic';
@@ -266,7 +273,7 @@ const StepsVisualizer = ({ steps }: { steps: string[] }) => {
 export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'home' | 'dashboard' | 'analysis'>('home');
+  const [view, setView] = useState<'home' | 'dashboard' | 'analysis' | 'ai-studio'>('home');
   const [file, setFile] = useState<File | null>(null);
   const [manualText, setManualText] = useState<string>('');
   const [manualTitle, setManualTitle] = useState<string>('');
@@ -276,10 +283,16 @@ export default function App() {
   const [deepDiveResult, setDeepDiveResult] = useState<{id: number, content: string} | null>(null);
   const [analysis, setAnalysis] = useState<QuizAnalysis | null>(null);
   const [pastAnalyses, setPastAnalyses] = useState<QuizAnalysis[]>([]);
+  const [subjectFilter, setSubjectFilter] = useState<string>('All');
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'score-high' | 'score-low'>('newest');
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [analysisToDelete, setAnalysisToDelete] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [newName, setNewName] = useState<string>('');
+  const [pastedImages, setPastedImages] = useState<File[]>([]);
+  const [isRenaming, setIsRenaming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Custom Regeneration State
@@ -289,31 +302,161 @@ export default function App() {
   const [isCustomRegenerating, setIsCustomRegenerating] = useState(false);
   const customRegenImageInputRef = useRef<HTMLInputElement>(null);
 
+  // AI Studio State
+  const [studioTab, setStudioTab] = useState<'chat' | 'image' | 'video'>('chat');
+  const [chatMessages, setChatMessages] = useState<{role: 'user' | 'model', text: string}[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatting, setIsChatting] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const [studioImagePrompt, setStudioImagePrompt] = useState('');
+  const [studioImageSize, setStudioImageSize] = useState<'1K' | '2K' | '4K'>('1K');
+  const [studioImageAspectRatio, setStudioImageAspectRatio] = useState<'1:1' | '3:4' | '4:3' | '9:16' | '16:9' | '1:4' | '1:8' | '4:1' | '8:1'>('1:1');
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [generatedImageUrl, setGeneratedImageUrl] = useState<string | null>(null);
+
+  const [studioVideoPrompt, setStudioVideoPrompt] = useState('');
+  const [studioVideoAspectRatio, setStudioVideoAspectRatio] = useState<'16:9' | '9:16'>('16:9');
+  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
+
+  const sendChatMessage = async () => {
+    if (!chatInput.trim() || isChatting) return;
+    const userMsg = chatInput;
+    setChatInput('');
+    setChatMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+    setIsChatting(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: userMsg,
+      });
+      setChatMessages(prev => [...prev, { role: 'model', text: response.text || 'No response.' }]);
+    } catch (err) {
+      toast.error('Failed to send message.');
+    } finally {
+      setIsChatting(false);
+    }
+  };
+
+  const generateStudioImage = async () => {
+    if (!studioImagePrompt.trim() || isGeneratingImage) return;
+    setIsGeneratingImage(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: studioImagePrompt,
+        config: {
+          imageConfig: {
+            imageSize: studioImageSize,
+            aspectRatio: studioImageAspectRatio
+          }
+        }
+      });
+      for (const part of response.candidates[0].content.parts) {
+        if (part.inlineData) {
+          setGeneratedImageUrl(`data:image/png;base64,${part.inlineData.data}`);
+          break;
+        }
+      }
+    } catch (err) {
+      toast.error('Failed to generate image.');
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  };
+
+  const generateStudioVideo = async () => {
+    if (!studioVideoPrompt.trim() || isGeneratingVideo) return;
+    setIsGeneratingVideo(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      let operation = await ai.models.generateVideos({
+        model: 'veo-3.1-lite-generate-preview',
+        prompt: studioVideoPrompt,
+        config: {
+          numberOfVideos: 1,
+          resolution: '1080p',
+          aspectRatio: studioVideoAspectRatio
+        }
+      });
+      while (!operation.done) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        operation = await ai.operations.getVideosOperation({ operation });
+      }
+      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+      if (downloadLink) {
+        const response = await fetch(downloadLink, {
+          method: 'GET',
+          headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY || '' },
+        });
+        const blob = await response.blob();
+        setGeneratedVideoUrl(URL.createObjectURL(blob));
+      }
+    } catch (err) {
+      toast.error('Failed to generate video.');
+    } finally {
+      setIsGeneratingVideo(false);
+    }
+  };
+
   useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
+
+  const [isFirebaseOffline, setIsFirebaseOffline] = useState(false);
+
+  const testConnection = async () => {
+    try {
+      await getDocFromServer(doc(db, 'test', 'connection'));
+      console.log("Firestore connection successful.");
+      setIsFirebaseOffline(false);
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('unavailable'))) {
+        console.error("Please check your Firebase configuration. The client is offline.");
+        setIsFirebaseOffline(true);
+      } else {
+        console.error("Firestore connectivity check failed:", error);
+      }
+    }
+  };
+
+  useEffect(() => {
+    testConnection();
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setUser(user);
       if (user) {
-        // Ensure user profile exists in Firestore
-        const userRef = doc(db, 'users', user.uid);
-        const userSnap = await getDoc(userRef);
-        if (!userSnap.exists()) {
-          await setDoc(userRef, {
-            uid: user.uid,
-            email: user.email,
-            displayName: user.displayName,
-            createdAt: new Date().toISOString()
-          });
-        }
+        try {
+          // Ensure user profile exists in Firestore
+          const userRef = doc(db, 'users', user.uid);
+          const userSnap = await getDoc(userRef);
+          if (!userSnap.exists()) {
+            await setDoc(userRef, {
+              uid: user.uid,
+              email: user.email,
+              displayName: user.displayName,
+              createdAt: new Date().toISOString()
+            });
+          }
 
-        // Fetch past analyses
-        const q = query(
-          collection(db, 'users', user.uid, 'analyses'),
-          orderBy('timestamp', 'desc')
-        );
-        onSnapshot(q, (snapshot) => {
-          const analyses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as QuizAnalysis));
-          setPastAnalyses(analyses);
-        });
+          // Fetch past analyses
+          const q = query(
+            collection(db, 'users', user.uid, 'analyses'),
+            orderBy('timestamp', 'desc')
+          );
+          onSnapshot(q, (snapshot) => {
+            const analyses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as QuizAnalysis));
+            setPastAnalyses(analyses);
+          }, (err) => {
+            handleFirestoreError(err, OperationType.LIST, `users/${user.uid}/analyses`);
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+        }
       }
       setLoading(false);
     });
@@ -365,7 +508,7 @@ export default function App() {
       setAnalysis({ ...item, questions });
       setView('analysis');
     } catch (err) {
-      console.error('Failed to load questions:', err);
+      handleFirestoreError(err, OperationType.LIST, `users/${user.uid}/analyses/${item.id}/questions`);
       setError('Failed to load analysis details.');
     }
   };
@@ -387,10 +530,29 @@ export default function App() {
       setAnalysisToDelete(null);
       // UI will update automatically via onSnapshot listener for pastAnalyses
     } catch (err) {
-      console.error('Failed to delete analysis:', err);
+      handleFirestoreError(err, OperationType.DELETE, `users/${user.uid}/analyses/${analysisId}`);
       setError('Failed to delete analysis. Please try again.');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleRename = async (analysisId: string) => {
+    if (!user || !newName.trim()) return;
+    setIsRenaming(true);
+    try {
+      const analysisRef = doc(db, 'users', user.uid, 'analyses', analysisId);
+      await updateDoc(analysisRef, {
+        fileName: newName.trim()
+      });
+      setRenamingId(null);
+      setNewName('');
+      toast.success('Analysis renamed successfully');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}/analyses/${analysisId}`);
+      toast.error('Failed to rename analysis');
+    } finally {
+      setIsRenaming(false);
     }
   };
 
@@ -439,24 +601,30 @@ export default function App() {
     });
   };
 
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    const newImages: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf("image") !== -1) {
+        const blob = items[i].getAsFile();
+        if (blob) {
+          newImages.push(blob);
+        }
+      }
+    }
+    if (newImages.length > 0) {
+      setPastedImages(prev => [...prev, ...newImages]);
+      toast.success(`Pasted ${newImages.length} image(s)`);
+    }
+  };
+
   const analyzeQuiz = async () => {
-    if (!file && !manualText.trim()) return;
+    if (!file && !manualText.trim() && pastedImages.length === 0) return;
 
     setIsAnalyzing(true);
     setError(null);
 
     try {
-      let base64Data = '';
-      let mimeType = 'text/plain';
-      
-      if (file) {
-        base64Data = await fileToBase64(file);
-        mimeType = file.type;
-      } else {
-        // For manual text, we can just send it as text or base64
-        base64Data = btoa(unescape(encodeURIComponent(manualText)));
-      }
-
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
       
       const prompt = `
@@ -491,12 +659,19 @@ export default function App() {
            - Include the EXACT formulas, specific parameters (values, units), and a clear, technically sound analogy.
            - Explicitly describe the visual elements: "A diagram showing [component A] connected to [component B] with labels for [parameter X] and the formula [formula Y]".
            - Style: Professional engineering infographic, clean, high-contrast, white background, technical diagram.
-        8. 2-3 Extra Resources (URLs to YouTube or educational sites).
+           - CRITICAL: If the question involves a formula, the prompt MUST include the formula in a way that the image generator can represent it clearly (e.g., "The formula E=mc^2 is prominently displayed").
+           - CRITICAL: Ensure the visualization is technically accurate and directly related to the question's core concept.
+        8. Video Generation Prompt:
+           - Provide a detailed prompt for a 5-10 second technical animation or video.
+           - Describe the motion: "A 3D animation of [component A] rotating while [parameter B] increases, showing the effect on [parameter C]".
+           - Style: Professional technical animation, high-quality, 3D or 2D motion graphics.
+        9. 2-3 Extra Resources (URLs to YouTube or educational sites).
         
         Return JSON:
         {
           "totalQuestionsFound": number,
           "totalMarks": number,
+          "suggestedTitle": "A concise, descriptive title for this analysis (e.g., 'Introduction to Thermodynamics' or 'Java Programming Quiz')",
           "questions": [
             {
               "id": 1,
@@ -508,6 +683,7 @@ export default function App() {
               "explanation": "Plain English explanation (No $ or #)",
               "visualizationHint": "Short visualization summary",
               "imagePrompt": "Detailed prompt for infographic generation",
+              "videoPrompt": "Detailed prompt for technical animation/video",
               "extraResources": ["url1", "url2"],
               "visualizationData": {
                 "type": "steps" | "logic",
@@ -520,14 +696,29 @@ export default function App() {
         }
       `;
 
+      const parts: any[] = [{ text: prompt }];
+
+      if (manualText.trim()) {
+        parts.push({ text: `User provided text content:\n${manualText}` });
+      }
+
+      if (file) {
+        const base64 = await fileToBase64(file);
+        parts.push({ inlineData: { mimeType: file.type, data: base64 } });
+      }
+
+      if (pastedImages.length > 0) {
+        for (const img of pastedImages) {
+          const base64 = await fileToBase64(img);
+          parts.push({ inlineData: { mimeType: img.type, data: base64 } });
+        }
+      }
+
       const response: GenerateContentResponse = await ai.models.generateContent({
         model: "gemini-3.1-pro-preview",
         contents: [
           {
-            parts: [
-              { text: prompt },
-              { inlineData: { mimeType: mimeType, data: base64Data } }
-            ]
+            parts: parts
           }
         ],
         config: { 
@@ -544,7 +735,7 @@ export default function App() {
         console.warn(`Exhaustive check: Found ${result.totalQuestionsFound} but only analyzed ${result.questions.length}.`);
       }
 
-      const { questions, ...metadata } = result;
+      const { questions, suggestedTitle, ...metadata } = result;
       
       // Calculate top subject
       const subjectCounts = questions.reduce((acc: any, q: any) => {
@@ -564,7 +755,7 @@ export default function App() {
       // Initial analysis data
       const analysisData: QuizAnalysis = {
         userId: user?.uid || 'anonymous',
-        fileName: file ? file.name : (manualTitle.trim() || 'Manual Text Input'),
+        fileName: manualTitle.trim() || suggestedTitle || (file ? file.name : 'Untitled Analysis'),
         timestamp: new Date().toISOString(),
         ...metadata,
         stats,
@@ -605,6 +796,10 @@ export default function App() {
       
       setAnalysis(analysisWithId);
       setView('analysis');
+      setFile(null);
+      setPastedImages([]);
+      setManualText('');
+      setManualTitle('');
 
       // Now generate infographics for each question in the background
       generateInfographics(analysisWithId, ai);
@@ -623,7 +818,13 @@ export default function App() {
     setGeneratingInfographics(prev => ({ ...prev, [q.docId!]: true }));
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const prompt = customPrompt || q.imagePrompt || `Professional engineering diagram for: ${q.question}. Subject: ${q.subject}. Technical style, white background, high contrast.`;
+      
+      // Enhanced prompt for better technical accuracy
+      const basePrompt = q.imagePrompt || `Professional engineering diagram for: ${q.question}. Subject: ${q.subject}. Technical style, white background, high contrast.`;
+      const prompt = customPrompt || `${basePrompt} 
+      CRITICAL: Ensure all technical symbols, formulas, and diagrams are accurate to the engineering principles of ${q.subject}. 
+      Avoid artistic flair; prioritize clarity and technical correctness. 
+      If a formula is mentioned, it must be legible and correctly formatted in the diagram.`;
       
       const parts: any[] = [{ text: prompt }];
       
@@ -659,9 +860,13 @@ export default function App() {
           });
 
           if (user && analysisId && q.docId && !isTooLarge) {
-            await updateDoc(doc(db, 'users', user.uid, 'analyses', analysisId, 'questions', q.docId), {
-              infographicUrl: infographicUrl
-            });
+            try {
+              await updateDoc(doc(db, 'users', user.uid, 'analyses', analysisId, 'questions', q.docId), {
+                infographicUrl: infographicUrl
+              });
+            } catch (fsErr) {
+              handleFirestoreError(fsErr, OperationType.UPDATE, `users/${user.uid}/analyses/${analysisId}/questions/${q.docId}`);
+            }
           }
           break;
         }
@@ -1003,6 +1208,134 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadPDF = async () => {
+    if (!analysis) return;
+    
+    const toastId = toast.loading('Preparing PDF report...');
+    
+    try {
+      // Create a hidden container for the report
+      const container = document.createElement('div');
+      container.style.position = 'fixed';
+      container.style.left = '-9999px';
+      container.style.top = '0';
+      container.style.width = '800px'; // Standard width for PDF
+      container.innerHTML = `
+        <div id="pdf-report-content" style="padding: 40px; background: white; font-family: 'Inter', sans-serif;">
+          <div style="border-bottom: 2px solid #2563eb; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: flex-end;">
+            <div>
+              <h1 style="margin: 0; color: #2563eb; font-size: 28px;">EngiAnalyze</h1>
+              <p style="margin: 5px 0 0; text-transform: uppercase; font-size: 9px; letter-spacing: 2px; font-weight: 800; color: #64748b;">Engineering Quiz Intelligence System</p>
+            </div>
+            <div style="text-align: right; font-size: 10px; color: #64748b;">
+              <div>Date: ${new Date(analysis.timestamp).toLocaleDateString()}</div>
+              <div>File: ${analysis.fileName}</div>
+            </div>
+          </div>
+
+          <div style="margin-bottom: 30px;">
+            <h2 style="font-size: 11px; text-transform: uppercase; letter-spacing: 2px; font-weight: 900; color: #2563eb; margin-bottom: 15px; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px;">Executive Summary</h2>
+            <div style="background: #f1f5f9; padding: 20px; border-radius: 12px; font-size: 14px; border-left: 4px solid #2563eb; line-height: 1.6;">
+              ${analysis.overallSummary}
+            </div>
+          </div>
+
+          <div style="margin-bottom: 30px;">
+            <h2 style="font-size: 11px; text-transform: uppercase; letter-spacing: 2px; font-weight: 900; color: #2563eb; margin-bottom: 15px; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px;">Question Analysis</h2>
+            ${analysis.questions?.map((q, idx) => `
+              <div style="border: 1px solid #e2e8f0; border-radius: 16px; padding: 20px; margin-bottom: 20px; page-break-inside: avoid;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+                  <span style="background: #2563eb; color: white; padding: 2px 10px; border-radius: 6px; font-size: 11px; font-weight: 800;">Q${idx + 1}</span>
+                  <span style="font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase;">${q.subject}</span>
+                </div>
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 15px; color: #0f172a;">${q.question}</div>
+                <div style="font-size: 10px; text-transform: uppercase; font-weight: 800; color: #64748b; margin-bottom: 5px;">Correct Answer</div>
+                <div style="background: #f0fdf4; color: #166534; padding: 10px 15px; border-radius: 10px; font-weight: 700; margin-bottom: 15px; border: 1px solid #dcfce7; font-size: 14px;">${q.correctAnswer}</div>
+                <div style="font-size: 10px; text-transform: uppercase; font-weight: 800; color: #2563eb; margin-bottom: 5px;">Explanation</div>
+                <div style="font-size: 13px; color: #475569; line-height: 1.6; white-space: pre-wrap;">${q.explanation}</div>
+                
+                ${q.extraResources && q.extraResources.length > 0 ? `
+                  <div style="margin-top: 15px; padding: 12px; background: #f0fdf4; border-radius: 10px; border: 1px solid #dcfce7;">
+                    <div style="font-size: 10px; font-weight: 800; color: #166534; text-transform: uppercase; margin-bottom: 8px;">Extra Learning Resources</div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                      ${q.extraResources.map((url, i) => `
+                        <a href="${url}" target="_blank" style="font-size: 11px; color: #2563eb; text-decoration: none; background: white; padding: 4px 8px; border-radius: 4px; border: 1px solid #e2e8f0;">Resource ${i + 1}</a>
+                      `).join('')}
+                    </div>
+                  </div>
+                ` : ''}
+
+                ${q.videoPrompt ? `
+                  <div style="margin-top: 15px; padding: 12px; background: #fef2f2; border-radius: 10px; border: 1px solid #fee2e2;">
+                    <div style="font-size: 10px; font-weight: 800; color: #991b1b; text-transform: uppercase; margin-bottom: 5px;">Video Generation Prompt</div>
+                    <div style="font-size: 11px; color: #7f1d1d; font-family: monospace; background: rgba(255,255,255,0.5); padding: 8px; border-radius: 6px;">
+                      ${q.videoPrompt}
+                    </div>
+                  </div>
+                ` : ''}
+
+                ${q.deepDive ? `
+                  <div style="margin-top: 15px; padding: 15px; background: #eff6ff; border-radius: 12px; border: 1px solid #dbeafe;">
+                    <div style="font-size: 10px; font-weight: 800; color: #1e40af; text-transform: uppercase; margin-bottom: 8px;">Advanced Deep Dive Insights</div>
+                    <div style="font-size: 12px; color: #1e3a8a; line-height: 1.6;">
+                      ${q.deepDive.replace(/\n/g, '<br>')}
+                    </div>
+                  </div>
+                ` : ''}
+
+                ${q.infographicUrl ? `
+                  <div style="margin-top: 20px; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0; padding: 10px; background: #f8fafc;">
+                    <img src="${q.infographicUrl}" style="width: 100%; height: auto; border-radius: 8px;" />
+                  </div>
+                ` : ''}
+              </div>
+            `).join('')}
+          </div>
+          
+          <div style="text-align: center; font-size: 10px; color: #94a3b8; margin-top: 40px; border-top: 1px solid #e2e8f0; padding-top: 20px;">
+            Generated by EngiAnalyze Intelligence System
+          </div>
+        </div>
+      `;
+      document.body.appendChild(container);
+
+      const canvas = await html2canvas(container.querySelector('#pdf-report-content') as HTMLElement, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const imgProps = pdf.getImageProperties(imgData);
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      
+      // Handle multi-page PDF if content is long
+      let heightLeft = pdfHeight;
+      let position = 0;
+      const pageHeight = pdf.internal.pageSize.getHeight();
+
+      pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, pdfHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - pdfHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, position, pdfWidth, pdfHeight);
+        heightLeft -= pageHeight;
+      }
+
+      pdf.save(`EngiAnalyze_Report_${analysis.fileName.replace(/\s+/g, '_')}.pdf`);
+      
+      document.body.removeChild(container);
+      toast.success('PDF report downloaded successfully!', { id: toastId });
+    } catch (err) {
+      console.error('PDF generation error:', err);
+      toast.error('Failed to generate PDF report.', { id: toastId });
+    }
+  };
+
   const handleDeepDive = async (q: any) => {
     setIsDeepDiving(q.id);
     try {
@@ -1061,6 +1394,19 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#F8F9FA] text-[#1A1A1A] font-sans selection:bg-blue-100">
       <Toaster position="top-right" richColors />
+      
+      {isFirebaseOffline && (
+        <div className="bg-amber-50 border-b border-amber-200 py-2 px-4 flex items-center justify-center gap-2 text-amber-800 text-sm font-medium animate-in fade-in slide-in-from-top duration-300">
+          <AlertCircle size={16} />
+          <span>Cloud database is currently unreachable. Some features may be limited.</span>
+          <button 
+            onClick={testConnection}
+            className="ml-4 underline text-amber-900 hover:text-amber-700 font-bold"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
       {/* Delete Confirmation Modal */}
       <AnimatePresence>
         {analysisToDelete && (
@@ -1139,6 +1485,15 @@ export default function App() {
                   )}
                 >
                   <LayoutDashboard size={18} /> Dashboard
+                </button>
+                <button 
+                  onClick={() => setView('ai-studio')}
+                  className={cn(
+                    "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all",
+                    view === 'ai-studio' ? "bg-purple-50 text-purple-600" : "text-gray-600 hover:bg-gray-50"
+                  )}
+                >
+                  <Sparkles size={18} /> AI Studio
                 </button>
                 <div className="h-8 w-px bg-gray-200 mx-2" />
                 <div className="flex items-center gap-3">
@@ -1485,20 +1840,41 @@ export default function App() {
                         Supports all engineering subjects. Max file size 10MB.
                       </p>
                       
-                      <div className="flex gap-4">
-                        <button
-                          onClick={() => fileInputRef.current?.click()}
-                          className="px-6 py-3 border border-gray-300 rounded-xl font-medium hover:bg-gray-50 transition-all active:scale-95"
-                        >
-                          Browse Files
-                        </button>
-                        {file && (
+                      <div className="flex flex-col items-center gap-4 w-full max-w-md">
+                        {!file ? (
                           <button
-                            onClick={analyzeQuiz}
-                            className="px-8 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="px-12 py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-black transition-all active:scale-95 shadow-xl shadow-gray-200"
                           >
-                            Analyze Now <ChevronRight size={18} />
+                            Browse Files
                           </button>
+                        ) : (
+                          <div className="w-full space-y-4">
+                            <div className="text-left">
+                              <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Analysis Title (Optional)</label>
+                              <input
+                                type="text"
+                                value={manualTitle}
+                                onChange={(e) => setManualTitle(e.target.value)}
+                                placeholder="Auto-generated if left blank"
+                                className="w-full px-4 py-3 rounded-xl border border-gray-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all text-sm"
+                              />
+                            </div>
+                            <div className="flex gap-3">
+                              <button
+                                onClick={() => setFile(null)}
+                                className="flex-1 px-6 py-3 border border-gray-200 rounded-xl font-bold text-gray-500 hover:bg-gray-50 transition-all"
+                              >
+                                Remove
+                              </button>
+                              <button
+                                onClick={analyzeQuiz}
+                                className="flex-[2] px-8 py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center justify-center gap-2"
+                              >
+                                Analyze Now <ChevronRight size={18} />
+                              </button>
+                            </div>
+                          </div>
                         )}
                       </div>
                       
@@ -1528,20 +1904,49 @@ export default function App() {
                           <textarea
                             value={manualText}
                             onChange={(e) => setManualText(e.target.value)}
-                            placeholder="Paste your quiz questions, code snippets, or engineering problems here..."
+                            onPaste={handlePaste}
+                            placeholder="Paste your quiz questions, code snippets, or engineering problems here... (You can also paste images!)"
                             className="w-full h-64 p-4 rounded-2xl border border-gray-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all resize-none text-sm leading-relaxed"
                           />
                         </div>
+                        
+                        {pastedImages.length > 0 && (
+                          <div className="flex flex-wrap gap-3 p-2 bg-gray-50 rounded-xl border border-gray-100">
+                            {pastedImages.map((img, idx) => (
+                              <div key={idx} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-white shadow-sm">
+                                <img 
+                                  src={URL.createObjectURL(img)} 
+                                  className="w-full h-full object-cover" 
+                                  alt="Pasted" 
+                                />
+                                <button
+                                  onClick={() => setPastedImages(prev => prev.filter((_, i) => i !== idx))}
+                                  className="absolute top-1 right-1 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                                >
+                                  <X size={10} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                         <div className="flex justify-between items-center pt-2">
-                          <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
-                            {manualText.length} characters
-                          </p>
+                          <div className="flex flex-col">
+                            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+                              {manualText.length} characters
+                            </p>
+                            {pastedImages.length > 0 && (
+                              <p className="text-[10px] text-blue-500 font-bold uppercase tracking-widest">
+                                {pastedImages.length} image(s) attached
+                              </p>
+                            )}
+                          </div>
                           <button
                             onClick={analyzeQuiz}
-                            disabled={!manualText.trim()}
+                            disabled={!manualText.trim() && pastedImages.length === 0}
                             className="px-8 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all active:scale-95 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            Analyze Text <ChevronRight size={18} />
+                            Analyze Content <ChevronRight size={18} />
                           </button>
                         </div>
                       </div>
@@ -1642,13 +2047,88 @@ export default function App() {
 
             {/* History List */}
             <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
-              <div className="p-6 border-b border-gray-100 flex items-center justify-between">
-                <h3 className="font-bold">Analysis History</h3>
-                <span className="text-xs text-gray-400 font-medium">Last updated: Just now</span>
+              <div className="p-6 border-b border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h3 className="font-bold">Analysis History</h3>
+                  <p className="text-xs text-gray-400 font-medium">Manage and review your past engineering quiz analyses</p>
+                </div>
+                
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Subject Filter */}
+                  <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-xl border border-gray-100">
+                    <Filter size={14} className="text-gray-400" />
+                    <select 
+                      value={subjectFilter}
+                      onChange={(e) => setSubjectFilter(e.target.value)}
+                      className="bg-transparent text-xs font-bold text-gray-600 outline-none cursor-pointer"
+                    >
+                      <option value="All">All Subjects</option>
+                      {Array.from(new Set(pastAnalyses.map(a => a.topSubject || 'General'))).sort().map(subject => (
+                        <option key={subject} value={subject}>{subject}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Sort By */}
+                  <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-xl border border-gray-100">
+                    <ArrowUpDown size={14} className="text-gray-400" />
+                    <select 
+                      value={sortBy}
+                      onChange={(e) => setSortBy(e.target.value as any)}
+                      className="bg-transparent text-xs font-bold text-gray-600 outline-none cursor-pointer"
+                    >
+                      <option value="newest">Newest First</option>
+                      <option value="oldest">Oldest First</option>
+                      <option value="score-high">Highest Score</option>
+                      <option value="score-low">Lowest Score</option>
+                    </select>
+                  </div>
+                </div>
               </div>
+
               <div className="divide-y divide-gray-50">
-                {pastAnalyses.length > 0 ? (
-                  pastAnalyses.map((item) => (
+                {(() => {
+                  let filtered = [...pastAnalyses];
+                  
+                  // Apply Subject Filter
+                  if (subjectFilter !== 'All') {
+                    filtered = filtered.filter(a => (a.topSubject || 'General') === subjectFilter);
+                  }
+
+                  // Apply Sorting
+                  filtered.sort((a, b) => {
+                    if (sortBy === 'newest') return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+                    if (sortBy === 'oldest') return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+                    
+                    const getScore = (item: QuizAnalysis) => {
+                      const total = item.stats?.total || item.questions?.length || 1;
+                      const correct = item.stats?.correct || item.questions?.filter(q => q.isCorrect).length || 0;
+                      return (correct / total) * 100;
+                    };
+
+                    if (sortBy === 'score-high') return getScore(b) - getScore(a);
+                    if (sortBy === 'score-low') return getScore(a) - getScore(b);
+                    return 0;
+                  });
+
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="p-12 text-center">
+                        <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-300 mx-auto mb-4">
+                          <Search size={32} />
+                        </div>
+                        <p className="text-gray-500 font-medium">No analyses found matching your filters.</p>
+                        <button 
+                          onClick={() => { setSubjectFilter('All'); setSortBy('newest'); }}
+                          className="mt-4 text-blue-600 text-sm font-bold hover:underline"
+                        >
+                          Clear all filters
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  return filtered.map((item) => (
                     <div 
                       key={item.id} 
                       className="p-6 hover:bg-gray-50 transition-colors cursor-pointer group"
@@ -1660,10 +2140,58 @@ export default function App() {
                             <FileText size={24} />
                           </div>
                           <div>
-                            <h4 className="font-bold text-gray-900">{item.fileName}</h4>
-                            <p className="text-xs text-gray-500">
-                              {new Date(item.timestamp).toLocaleDateString()} • {item.stats?.total || item.questions?.length || 0} Questions
-                            </p>
+                            {renamingId === item.id ? (
+                              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="text"
+                                  value={newName}
+                                  onChange={(e) => setNewName(e.target.value)}
+                                  className="px-2 py-1 border border-blue-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-100"
+                                  autoFocus
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleRename(item.id!);
+                                    if (e.key === 'Escape') setRenamingId(null);
+                                  }}
+                                />
+                                <button
+                                  onClick={() => handleRename(item.id!)}
+                                  disabled={isRenaming}
+                                  className="p-1 text-green-600 hover:bg-green-50 rounded"
+                                >
+                                  {isRenaming ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
+                                </button>
+                                <button
+                                  onClick={() => setRenamingId(null)}
+                                  className="p-1 text-gray-400 hover:bg-gray-100 rounded"
+                                >
+                                  <XCircle size={16} />
+                                </button>
+                              </div>
+                            ) : (
+                              <h4 className="font-bold text-gray-900 flex items-center gap-2">
+                                {item.fileName}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRenamingId(item.id!);
+                                    setNewName(item.fileName);
+                                  }}
+                                  className="p-1 text-gray-300 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-all"
+                                  title="Rename"
+                                >
+                                  <Edit2 size={14} />
+                                </button>
+                              </h4>
+                            )}
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="px-2 py-0.5 bg-gray-100 text-[10px] font-bold text-gray-500 rounded uppercase tracking-wider">
+                                {item.topSubject || 'General'}
+                              </span>
+                              <span className="text-gray-300">•</span>
+                              <p className="text-xs text-gray-500">
+                                {new Date(item.timestamp).toLocaleDateString()} • {item.stats?.total || item.questions?.length || 0} Questions
+                              </p>
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-6">
@@ -1689,12 +2217,8 @@ export default function App() {
                         </div>
                       </div>
                     </div>
-                  ))
-                ) : (
-                  <div className="p-12 text-center text-gray-400">
-                    <p>No analyses yet. Upload your first quiz to start tracking progress!</p>
-                  </div>
-                )}
+                  ));
+                })()}
               </div>
             </div>
           </motion.div>
@@ -1718,13 +2242,20 @@ export default function App() {
                   </h2>
                   <p className="text-gray-500 font-medium">Comprehensive Engineering Intelligence Breakdown</p>
                 </div>
-                <div className="flex gap-4">
+                <div className="flex flex-wrap gap-3">
                   <button
                     onClick={downloadReport}
-                    className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-2xl font-bold text-sm hover:bg-black transition-all shadow-lg shadow-gray-200 group"
+                    className="flex items-center gap-2 bg-white border-2 border-gray-200 text-gray-700 px-6 py-3 rounded-2xl font-bold text-sm hover:bg-gray-50 transition-all shadow-sm group"
                   >
                     <Download size={18} className="group-hover:translate-y-0.5 transition-transform" />
-                    Download Full Report
+                    HTML Report
+                  </button>
+                  <button
+                    onClick={downloadPDF}
+                    className="flex items-center gap-2 bg-gray-900 text-white px-6 py-3 rounded-2xl font-bold text-sm hover:bg-black transition-all shadow-lg shadow-gray-200 group"
+                  >
+                    <FileText size={18} className="group-hover:translate-y-0.5 transition-transform" />
+                    PDF Report
                   </button>
                   <button
                     onClick={() => setView(user ? 'dashboard' : 'home')}
@@ -1734,6 +2265,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
+            </div>
 
               <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-12">
                 <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100/50">
@@ -1858,7 +2390,6 @@ export default function App() {
                   </div>
                 </div>
               </div>
-            </div>
 
             <div className="space-y-8">
               {analysis.questions?.map((q, idx) => (
